@@ -9,6 +9,9 @@ LINUX="LINUX"
 UNKNOWN="UNKNOWN"
 PLATFORM=$UNKNOWN
 
+RUN_ROUNDS=2
+RUN_TIME=10s
+
 function detectOS() {
 
     if [[ "$OSTYPE" == "linux-gnu" ]]; then
@@ -66,7 +69,18 @@ function detectMaven() {
     if type -p mvn; then
         echo "Found Maven executable in PATH"
     else
-        echo "Not found Java installed"
+        echo "Not found Maven installed"
+        exit 1
+    fi
+
+}
+
+function detectOpenresty() {
+
+    if type -p openresty; then
+        echo "Found Maven executable in PATH"
+    else
+        echo "Not found Openresty installed"
         exit 1
     fi
 
@@ -87,9 +101,10 @@ function setup(){
 
     detectOS
 
-    detectGo
+    #detectGo
     detectJava
-    detectMaven
+    #detectMaven
+    detectOpenresty
 
     detectWrk
 
@@ -109,7 +124,7 @@ function runStatic() {
         ./webserver.darwin-amd64
     elif [ "$PLATFORM" == "$LINUX" ]; then
         # go build -o webserver webserver.go
-        ./webserver
+        ./webserver > /dev/null 2>&1
         exit 1
     elif [ "$PLATFORM" == "$WIN" ]; then
         echo "Googling"
@@ -121,13 +136,26 @@ function runStatic() {
 
 }
 
+function prepareZuul() {
+    echo "Preparing Gateway Zuul"
+    cd zuul
+    ./mvnw clean package
+    cd ..
+}
+
 function runZuul() {
 
     echo "Running Gateway Zuul"
 
     cd zuul
-    ./mvnw clean package
     java -jar target/zuul-0.0.1-SNAPSHOT.jar
+}
+
+function prepareGateway() {
+    echo "Preparing Spring Gateway"
+    cd gateway
+    ./mvnw clean package
+    cd ..
 }
 
 function runGateway() {
@@ -135,7 +163,6 @@ function runGateway() {
     echo "Running Spring Gateway"
 
     cd gateway
-    ./mvnw clean package
     java -jar target/gateway-0.0.1-SNAPSHOT.jar
 }
 
@@ -147,13 +174,24 @@ function runLinkerd() {
     java -jar linkerd-1.3.4.jar linkerd.yaml
 }
 
+function runOpenresty() {
+
+    echo "Running Openresty"
+
+    cd openresty
+    openresty -p `pwd` -c openresty.conf
+}
+
 # trap ctrl-c and call ctrl_c()
 trap ctrl_c INT
 
 function ctrl_c() {
         echo "** Trapped CTRL-C"
         kill $(ps aux | grep './webserver.darwin-amd64' | awk '{print $2}')
-        pkill java
+        kill $(ps aux | grep 'openresty' | awk '{print $2}')
+        kill $(jps -l | grep 'zuul-' | awk '{print $1}')
+        kill $(jps -l | grep 'gateway-' | awk '{print $1}')
+        kill $(jps -l | grep 'linkerd-' | awk '{print $1}')
         exit 1
 }
 
@@ -170,15 +208,19 @@ if [ '{output:"I Love Spring Cloud"}' != "${response}" ]; then
     exit 1
 fi;
 
-echo "Wait 10"
-sleep 10
+echo "Wait 3"
+sleep 3
 
 function runGateways() {
+    echo "Preparing tools"
+#    prepareZuul
+#    prepareGateway
 
     echo "Run Gateways"
     runZuul &
     runGateway &
     runLinkerd &
+    runOpenresty &
 
 }
 
@@ -190,19 +232,24 @@ function warmup() {
 
     echo "JVM Warmup"
 
-    for run in {1..10}
+    for run in {1..$RUN_ROUNDS}
     do
-      wrk -t 10 -c 200 -d 30s http://localhost:8082/hello.txt >> ./reports/gateway.txt
+      wrk -t 10 -c 200 -d $RUN_TIME http://localhost:8082/hello.txt >> ./reports/gateway.txt
     done
 
-    for run in {1..10}
+    for run in {1..$RUN_ROUNDS}
     do
-      wrk -H "Host: web" -t 10 -c 200 -d 30s http://localhost:4140/hello.txt >> ./reports/linkerd.txt
+      wrk -H "Host: web" -t 10 -c 200 -d $RUN_TIME http://localhost:4140/hello.txt >> ./reports/linkerd.txt
     done
 
-    for run in {1..10}
+    for run in {1..$RUN_ROUNDS}
     do
-      wrk -t 10 -c 200 -d 30s http://localhost:8081/hello.txt >> ./reports/zuul.txt
+      wrk -t 10 -c 200 -d $RUN_TIME http://localhost:8081/hello.txt >> ./reports/zuul.txt
+    done
+
+    for run in {1..$RUN_ROUNDS}
+    do
+      wrk -t 10 -c 200 -d $RUN_TIME http://localhost:20000/hello.txt >> ./reports/openresty.txt
     done
 }
 
@@ -211,8 +258,8 @@ function runPerformanceTests() {
     echo "Static results"
     wrk -t 10 -c 200 -d 30s  http://localhost:8000/hello.txt > ./reports/static.txt
 
-    echo "Wait 60 seconds"
-    sleep 60
+    echo "Wait 10 seconds"
+    sleep 10
 
     warmup
 }
